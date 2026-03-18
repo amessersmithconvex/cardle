@@ -8,7 +8,9 @@ export default function ShareButton({ scores, totalScore, gameNumber, gameDate, 
     const title = gameType === 'daily'
       ? `Cardle #${gameNumber}`
       : 'Cardle Practice';
-    const url = `${window.location.origin}/share/${shareCode}`;
+    const url = gameType === 'daily'
+      ? `${window.location.origin}/play/daily`
+      : `${window.location.origin}/play/practice`;
 
     return `${title} 🚗 ${totalScore.toLocaleString()}/5,000\n${emojis}\n\n${url}`;
   }
