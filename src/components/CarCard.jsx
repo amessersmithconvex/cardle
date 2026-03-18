@@ -74,6 +74,7 @@ export default function CarCard({ car, carNumber, totalCars, revealed, userGuess
             src={car.images[imgIdx]}
             alt={`${car.year} ${car.make} ${car.model}`}
             className="w-full h-56 sm:h-72 object-cover"
+            referrerPolicy="no-referrer"
             onError={() => setImgError(true)}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/30" />
