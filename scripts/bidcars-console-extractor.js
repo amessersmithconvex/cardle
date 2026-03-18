@@ -83,13 +83,14 @@
     }
     if (vinLineIdx < 0) continue;
 
-    // Grab a window of lines around the VIN (the card's text content)
-    const startLine = Math.max(0, vinLineIdx - 5);
-    const endLine = Math.min(lines.length, vinLineIdx + 25);
-    const block = lines.slice(startLine, endLine).join('\n');
+    // Lines AFTER the VIN — "Final bid" always appears below the VIN on bid.cars
+    const afterVin = lines.slice(vinLineIdx, Math.min(lines.length, vinLineIdx + 20)).join('\n');
+    // Lines BEFORE the VIN — for car title, make/model context
+    const beforeVin = lines.slice(Math.max(0, vinLineIdx - 5), vinLineIdx + 1).join('\n');
+    const block = beforeVin + '\n' + afterVin;
 
-    // Extract "Final bid: $X,XXX" — the specific format bid.cars uses
-    const bidMatch = block.match(/Final\s+bid:?\s*\$\s*([\d,]+)/i);
+    // Extract "Final bid: $X,XXX" ONLY from lines after the VIN
+    const bidMatch = afterVin.match(/Final\s+bid:?\s*\$\s*([\d,]+)/i);
     if (!bidMatch) continue;
 
     const soldPrice = parseInt(bidMatch[1].replace(/,/g, ''), 10);
