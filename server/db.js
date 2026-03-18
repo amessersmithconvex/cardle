@@ -1,4 +1,5 @@
 import initSqlJs from 'sql.js';
+import bcrypt from 'bcryptjs';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -106,7 +107,32 @@ export async function initDb() {
   }
 
   initializeDatabase();
+  seedUsers();
   return db;
+}
+
+function seedUsers() {
+  const seedPath = path.join(__dirname, 'data', 'seed-users.json');
+  if (!fs.existsSync(seedPath)) return;
+
+  try {
+    const users = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
+    let seeded = 0;
+    for (const u of users) {
+      if (!u.username || !u.email || !u.password) continue;
+      const existing = db.prepare('SELECT id FROM users WHERE email = ? OR username = ?')
+        .get(u.email.toLowerCase(), u.username);
+      if (existing) continue;
+
+      const hash = bcrypt.hashSync(u.password, 10);
+      db.prepare('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)')
+        .run(u.username, u.email.toLowerCase(), hash);
+      seeded++;
+    }
+    if (seeded > 0) console.log(`Seeded ${seeded} user account(s) from seed-users.json`);
+  } catch (err) {
+    console.error('Error seeding users:', err.message);
+  }
 }
 
 export function getDb() {

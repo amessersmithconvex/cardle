@@ -69,7 +69,7 @@ export default function CarCard({ car, carNumber, totalCars, revealed, userGuess
     <div className="card animate-scale-in">
       {/* Hero section with optional image */}
       {hasImages ? (
-        <div className="relative">
+        <div className="relative group">
           <img
             src={car.images[imgIdx]}
             alt={`${car.year} ${car.make} ${car.model}`}
@@ -86,17 +86,23 @@ export default function CarCard({ car, carNumber, totalCars, revealed, userGuess
             </div>
           )}
           {car.images.length > 1 && (
-            <div className="absolute bottom-16 right-4 flex gap-1.5">
-              {car.images.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setImgIdx(i)}
-                  className={`w-2.5 h-2.5 rounded-full transition ${
-                    i === imgIdx ? 'bg-white' : 'bg-white/40 hover:bg-white/70'
-                  }`}
-                />
-              ))}
-            </div>
+            <>
+              <button
+                onClick={() => setImgIdx((prev) => (prev - 1 + car.images.length) % car.images.length)}
+                className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-black/80 backdrop-blur-sm w-9 h-9 rounded-full flex items-center justify-center text-white text-lg font-bold sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+              >
+                ‹
+              </button>
+              <button
+                onClick={() => setImgIdx((prev) => (prev + 1) % car.images.length)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-black/80 backdrop-blur-sm w-9 h-9 rounded-full flex items-center justify-center text-white text-lg font-bold sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+              >
+                ›
+              </button>
+              <div className="absolute bottom-16 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold">
+                {imgIdx + 1} / {car.images.length}
+              </div>
+            </>
           )}
           <div className="absolute bottom-0 left-0 right-0 p-4">
             <h2 className="text-2xl sm:text-3xl font-black drop-shadow-lg">
