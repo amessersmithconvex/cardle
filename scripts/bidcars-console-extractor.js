@@ -1,6 +1,6 @@
 /**
  * ============================================================
- *  Cardle - bid.cars Console Extractor  (v4.1 - DOM-based)
+ *  Cardle - bid.cars Console Extractor  (v5 - Final Bid match)
  * ============================================================
  *
  *  HOW TO USE:
@@ -10,325 +10,242 @@
  *  4. Paste this entire script and press Enter
  *  5. JSON file downloads automatically
  *
- *  v4 FIX: Uses DOM structure to match prices to the correct
- *  car card, instead of searching raw page text (which caused
- *  prices to bleed between neighboring listings).
+ *  v5 FIX: Specifically matches "Final bid: $X,XXX" text from
+ *  each car listing instead of grabbing any dollar amount.
  * ============================================================
  */
-(function cardleV4() {
+(function cardleV5() {
   'use strict';
-  console.log('%c🚗 Cardle Extractor v4.1 (DOM-based)', 'font-size:18px;font-weight:bold;color:#f97316');
+  console.log('%c🚗 Cardle Extractor v5 (Final Bid match)', 'font-size:18px;font-weight:bold;color:#f97316');
 
-  // ---- STEP 1: Find all bid.cars image URLs from page HTML ----
-  // Use the same loose regex from v3 that successfully found URLs,
-  // then parse the filename with JS string splitting.
+  const pageText = document.body.innerText || '';
+
+  // ---- STEP 1: Find all VINs on the page ----
+  // VINs are 17 chars, A-HJ-NPR-Z0-9 (no I, O, Q)
+  const vinRx = /\b[A-HJ-NPR-Z0-9]{17}\b/g;
+  const allVins = new Set();
+  let vm;
+  while ((vm = vinRx.exec(pageText)) !== null) {
+    allVins.add(vm[0]);
+  }
+  console.log(`  Found ${allVins.size} unique VINs on page`);
+
+  // ---- STEP 2: Find image URLs from page HTML ----
   const pageHtml = document.documentElement.innerHTML;
   const imgUrlRx = /https?:\/\/mercury\.bid\.cars\/([\d-]+)\/([\w-]+?)\.(?:jpg|jpeg|png|webp)/gi;
+  const vinImages = new Map();
 
-  const allImageUrls = [];
   let m;
   while ((m = imgUrlRx.exec(pageHtml)) !== null) {
-    allImageUrls.push({ url: m[0], lotId: m[1], filename: m[2] });
-  }
-
-  console.log(`  Found ${allImageUrls.length} bid.cars image URLs in page`);
-
-  // ---- STEP 2: Group images by VIN, parse car info from filenames ----
-  const vinMap = new Map();
-
-  for (const { url, lotId, filename } of allImageUrls) {
+    const url = m[0];
+    const filename = m[2];
     const parts = filename.split('-');
     if (parts.length < 4) continue;
 
-    const year = parseInt(parts[0], 10);
-    if (year < 1900 || year > 2030) continue;
-
-    // VIN is always 17 alphanumeric chars — find it by scanning parts backwards
-    let vin = '';
-    let vinPartIdx = -1;
     for (let i = parts.length - 2; i >= 1; i--) {
       if (/^[A-HJ-NPR-Z0-9]{17}$/i.test(parts[i])) {
-        vin = parts[i].toUpperCase();
-        vinPartIdx = i;
+        const vin = parts[i].toUpperCase();
+        if (!vinImages.has(vin)) vinImages.set(vin, []);
+        const imgs = vinImages.get(vin);
+        if (!imgs.includes(url)) imgs.push(url);
         break;
       }
     }
-    if (!vin || vinPartIdx < 2) continue;
-
-    const make = parts[1] || '';
-    const model = parts.slice(2, vinPartIdx).join(' ') || '';
-
-    if (!vinMap.has(vin)) {
-      vinMap.set(vin, { lotId, year, make, model, vin, images: [] });
-    }
-    const entry = vinMap.get(vin);
-    if (!entry.images.includes(url)) {
-      entry.images.push(url);
-    }
   }
+  console.log(`  Found images for ${vinImages.size} cars`);
 
-  console.log(`  Identified ${vinMap.size} unique cars from image URLs`);
+  // ---- STEP 3: Split page into car blocks and extract data ----
+  // Each car block on bid.cars follows this pattern:
+  //   [YEAR MAKE MODEL]
+  //   VIN   LOT-NUMBER
+  //   [auction house]
+  //   [specs]
+  //   - Status: ...
+  //   - Damage: ...
+  //   - Location: ...
+  //   - Sale doc.: ...
+  //   - Seller: ...
+  //   - Milage: ...
+  //   Final bid: $X,XXX  (or "Final bid: ---")
 
-  if (vinMap.size === 0) {
-    console.log('%c❌ No cars found. Make sure you are on a bid.cars results page with car images visible.', 'color:red;font-size:14px');
-    console.log('  Try scrolling down to load some results first.');
-    return;
-  }
+  const lines = pageText.split('\n');
+  const cars = [];
+  let id = 1;
 
-  // ---- STEP 3: Build a VIN→DOM-card map using image elements ----
-  // Find <img> elements that contain each car's VIN, then walk up to card container
-  const vinToCard = new Map();
+  for (const vin of allVins) {
+    // Find the line containing this VIN
+    let vinLineIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(vin)) {
+        vinLineIdx = i;
+        break;
+      }
+    }
+    if (vinLineIdx < 0) continue;
 
-  for (const [vin] of vinMap) {
-    // Find any img element whose src contains this VIN
-    const imgEl = document.querySelector(
-      `img[src*="${vin}"], img[data-src*="${vin}"], img[data-lazy*="${vin}"]`
-    );
-    if (!imgEl) continue;
+    // Grab a window of lines around the VIN (the card's text content)
+    const startLine = Math.max(0, vinLineIdx - 5);
+    const endLine = Math.min(lines.length, vinLineIdx + 25);
+    const block = lines.slice(startLine, endLine).join('\n');
 
-    // Walk up DOM to find the card container
-    let el = imgEl.parentElement;
-    let depth = 0;
-    while (el && el !== document.body && depth < 20) {
-      const text = el.innerText || '';
-      if (text.length > 50 && text.length < 4000) {
-        const hasMoney = /\$[\d,]+/.test(text);
-        if (hasMoney) {
-          // Check this isn't too big (containing many cars)
-          const vinCount = Array.from(vinMap.keys()).filter(v => text.includes(v)).length;
-          if (vinCount <= 2) {
-            vinToCard.set(vin, el);
-            break;
-          }
+    // Extract "Final bid: $X,XXX" — the specific format bid.cars uses
+    const bidMatch = block.match(/Final\s+bid:?\s*\$\s*([\d,]+)/i);
+    if (!bidMatch) continue;
+
+    const soldPrice = parseInt(bidMatch[1].replace(/,/g, ''), 10);
+    if (!soldPrice || soldPrice < 50) continue;
+
+    // Parse year/make/model from image URL filename (most reliable source)
+    let year = 0, make = '', model = '';
+    const images = (vinImages.get(vin) || []).sort();
+
+    if (images.length > 0) {
+      const firstImg = images[0];
+      const fMatch = firstImg.match(/mercury\.bid\.cars\/[\d-]+\/([\w-]+?)\./);
+      if (fMatch) {
+        const parts = fMatch[1].split('-');
+        year = parseInt(parts[0], 10) || 0;
+        let vinPartIdx = -1;
+        for (let i = parts.length - 2; i >= 1; i--) {
+          if (/^[A-HJ-NPR-Z0-9]{17}$/i.test(parts[i])) { vinPartIdx = i; break; }
+        }
+        if (vinPartIdx >= 2) {
+          make = parts[1].replace(/-/g, ' ');
+          model = parts.slice(2, vinPartIdx).join(' ').replace(/-/g, ' ');
         }
       }
-      el = el.parentElement;
-      depth++;
     }
-  }
 
-  console.log(`  DOM-matched ${vinToCard.size} cars to their card elements`);
+    // Fallback: parse year from lines above VIN
+    if (!year) {
+      for (let i = vinLineIdx; i >= Math.max(0, vinLineIdx - 3); i--) {
+        const ym = lines[i].match(/\b(19|20)\d{2}\b/);
+        if (ym) { year = parseInt(ym[0], 10); break; }
+      }
+    }
+    if (!year) continue;
 
-  // ---- STEP 4: Extract data for each car ----
-  const pageText = document.body.innerText || '';
-  const cars = [];
-  let domPriced = 0;
-  let textPriced = 0;
-  let noPriced = 0;
-
-  for (const [vin, info] of vinMap) {
-    const car = {
-      year: info.year,
-      make: info.make.replace(/-/g, ' '),
-      model: info.model.replace(/-/g, ' '),
-      trim: '',
-      vin: info.vin,
-      mileage: 0,
-      exteriorColor: '',
-      interiorColor: '',
-      engine: '',
-      transmission: '',
-      drivetrain: '',
-      condition: 'Unknown',
-      damage: '',
-      seller: '',
-      saleDocument: '',
-      location: '',
-      mechanicalNotes: '',
-      highlights: [],
-      soldPrice: 0,
-      soldDate: '',
-      auctionHouse: '',
-      auctionSource: 'bid.cars',
-      images: info.images.sort(),
-      sourceUrl: '',
+    // Extract other details from the block
+    const kv = (label) => {
+      const rx = new RegExp(label + ':?\\s*(.+?)(?:\\n|$)', 'i');
+      const match = block.match(rx);
+      return match ? match[1].trim() : '';
     };
 
-    let chunk = '';
+    const damage = kv('Damage');
+    const status = kv('Status');
+    const location = kv('Location');
+    const seller = kv('Seller');
+    const saleDoc = kv('Sale doc');
 
-    // PRIMARY: Get text from the DOM card (scoped to this car only)
-    const cardEl = vinToCard.get(vin);
-    if (cardEl) {
-      chunk = cardEl.innerText || '';
+    let mileage = 0;
+    const mileM = block.match(/Milage:?\s*(\d[\d,]*)\s*k?\s*miles/i)
+      || block.match(/(\d[\d,]*)\s*k?\s*miles/i);
+    if (mileM) {
+      const raw = mileM[1].replace(/,/g, '');
+      mileage = raw.includes('k') ? parseInt(raw, 10) * 1000 : parseInt(raw, 10);
+      if (mileage < 500) mileage *= 1000;
     }
 
-    // FALLBACK: Small text window around VIN (if no DOM card found)
-    if (!chunk) {
-      const vinIdx = pageText.indexOf(vin);
-      if (vinIdx >= 0) {
-        const start = Math.max(0, vinIdx - 250);
-        const end = Math.min(pageText.length, vinIdx + 250);
-        chunk = pageText.substring(start, end);
-      }
-    }
+    let auctionHouse = '';
+    if (/\biaai\b/i.test(block)) auctionHouse = 'IAAI';
+    else if (/\bcopart\b/i.test(block)) auctionHouse = 'Copart';
 
-    if (chunk) {
-      // Price: from DOM card, take last price (usually the sold/final bid).
-      // From text fallback, take the price closest to the VIN.
-      if (cardEl) {
-        const prices = (chunk.match(/\$[\d,]+/g) || [])
-          .map(p => parseInt(p.replace(/[$,]/g, ''), 10))
-          .filter(p => p >= 100);
-        if (prices.length === 1) {
-          car.soldPrice = prices[0];
-          domPriced++;
-        } else if (prices.length > 1) {
-          // On bid.cars cards, the final/sold price is typically the last one shown
-          car.soldPrice = prices[prices.length - 1];
-          domPriced++;
-        }
-      } else {
-        // Text fallback: find the price closest to the VIN position
-        const vinPos = chunk.indexOf(vin);
-        const priceRx = /\$[\d,]+/g;
-        let closest = null;
-        let closestDist = Infinity;
-        let pm;
-        while ((pm = priceRx.exec(chunk)) !== null) {
-          const val = parseInt(pm[0].replace(/[$,]/g, ''), 10);
-          if (val < 100) continue;
-          const dist = Math.abs(pm.index - (vinPos >= 0 ? vinPos : chunk.length / 2));
-          if (dist < closestDist) {
-            closestDist = dist;
-            closest = val;
-          }
-        }
-        if (closest) {
-          car.soldPrice = closest;
-          textPriced++;
-        }
-      }
+    let drivetrain = '';
+    if (/\bAWD\b|All\s*wheel/i.test(block)) drivetrain = 'AWD';
+    else if (/\bFWD\b|Front\s*wheel/i.test(block)) drivetrain = 'FWD';
+    else if (/\bRWD\b|Rear\s*wheel/i.test(block)) drivetrain = 'RWD';
+    else if (/\b4WD\b|Four\s*wheel/i.test(block)) drivetrain = '4WD';
 
-      // Auction house
-      if (/\bIAAI\b/.test(chunk)) car.auctionHouse = 'IAAI';
-      else if (/\bCopart\b/.test(chunk)) car.auctionHouse = 'Copart';
+    let engine = '';
+    const engParts = [];
+    const disp = block.match(/(\d+\.\d+)\s*L/i); if (disp) engParts.push(disp[0]);
+    const cyl = block.match(/(\d+)\s*cyl\.?/i); if (cyl) engParts.push(cyl[0]);
+    const hp = block.match(/(\d{2,4})\s*HP/i); if (hp) engParts.push(hp[0]);
+    if (engParts.length) engine = engParts.join(' ');
 
-      // Drivetrain
-      if (/\bAWD\b/.test(chunk)) car.drivetrain = 'AWD';
-      else if (/\bFWD\b/.test(chunk)) car.drivetrain = 'FWD';
-      else if (/\bRWD\b/.test(chunk)) car.drivetrain = 'RWD';
-      else if (/\b4WD\b/.test(chunk)) car.drivetrain = '4WD';
-
-      // Engine
-      const eng = [];
-      const disp = chunk.match(/(\d+\.\d+)\s*L/i);  if (disp) eng.push(disp[0]);
-      const cyl = chunk.match(/(\d+)\s*cyl\.?/i);    if (cyl) eng.push(cyl[0]);
-      const hp = chunk.match(/(\d{2,4})\s*HP/i);     if (hp) eng.push(hp[0]);
-      if (eng.length) car.engine = eng.join(' ');
-
-      // Mileage
-      const mile = chunk.match(/(\d[\d,]*)\s*miles?/i);
-      if (mile) car.mileage = parseInt(mile[1].replace(/,/g, ''), 10);
-      if (!car.mileage) {
-        const mileK = chunk.match(/(\d+)k\s*miles/i);
-        if (mileK) car.mileage = parseInt(mileK[1], 10) * 1000;
-      }
-
-      // Key-value fields
-      const kv = (label) => {
-        const rx = new RegExp(label + ':?\\s*(.+?)(?:\\n|$)', 'i');
-        const match = chunk.match(rx);
-        return match ? match[1].trim() : '';
-      };
-
-      car.damage = kv('Damage');
-      car.seller = kv('Seller');
-      car.saleDocument = kv('Sale doc\\.?') || kv('Sale document');
-      car.location = kv('Location');
-
-      if (!car.damage) {
-        const dmg = chunk.match(/Collision\s*\|?\s*[\w\s]*/i) ||
-          chunk.match(/(Flood|Fire|Vandalism|Theft|Hail|Mechanical|Water|Rollover|All Over)/i);
-        if (dmg) car.damage = dmg[0].trim();
-      }
-
-      // Status
-      const statuses = ['Run and Drive', 'Does Not Run', 'Starts', 'Stationary', 'Enhanced'];
-      for (const s of statuses) {
-        if (chunk.includes(s)) { car.condition = s; break; }
-      }
-
-      // Date
-      const dateM = chunk.match(
-        /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*[\s,]+(\d{1,2}\s+\w+,?\s+\d{4})/i
-      ) || chunk.match(/(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*,?\s+\d{4})/i);
-      if (dateM) {
-        try {
-          const d = new Date(dateM[1] || dateM[0]);
-          if (!isNaN(d.getTime())) car.soldDate = d.toISOString().split('T')[0];
-        } catch { /* skip */ }
-      }
-    }
-
-    // Build highlights & notes
-    if (car.drivetrain) car.highlights.push(car.drivetrain);
-    if (car.condition && car.condition !== 'Unknown') car.highlights.push(car.condition);
-    if (car.damage) car.highlights.push(car.damage);
-    if (car.auctionHouse) car.highlights.push(car.auctionHouse);
+    const highlights = [];
+    if (drivetrain) highlights.push(drivetrain);
+    if (status && status !== 'Unknown' && status !== 'No information') highlights.push(status);
+    if (damage) highlights.push(damage);
+    if (auctionHouse) highlights.push(auctionHouse);
 
     let notes = '';
-    if (car.damage) notes += 'Damage: ' + car.damage + '. ';
-    if (car.condition !== 'Unknown') notes += 'Status: ' + car.condition + '. ';
-    if (car.seller) notes += 'Seller: ' + car.seller + '. ';
-    if (car.saleDocument) notes += 'Sale Doc: ' + car.saleDocument + '. ';
-    car.mechanicalNotes = notes.trim();
-    car.auctionSource = car.auctionHouse ? car.auctionHouse + ' via bid.cars' : 'bid.cars';
+    if (damage) notes += 'Damage: ' + damage + '. ';
+    if (status && status !== 'No information') notes += 'Status: ' + status + '. ';
+    if (seller) notes += 'Seller: ' + seller + '. ';
+    if (saleDoc) notes += 'Sale Doc: ' + saleDoc + '. ';
 
-    if (car.soldPrice > 0) {
-      cars.push(car);
-    } else {
-      noPriced++;
-    }
+    cars.push({
+      id: id++,
+      year,
+      make,
+      model,
+      trim: '',
+      vin,
+      mileage,
+      exteriorColor: '',
+      interiorColor: '',
+      engine,
+      transmission: '',
+      drivetrain,
+      condition: status || 'Unknown',
+      damage,
+      seller,
+      saleDocument: saleDoc,
+      location,
+      mechanicalNotes: notes.trim(),
+      highlights,
+      soldPrice,
+      soldDate: '',
+      auctionHouse,
+      auctionSource: auctionHouse ? auctionHouse + ' via bid.cars' : 'bid.cars',
+      images,
+      sourceUrl: '',
+    });
   }
 
-  // Assign sequential IDs
-  cars.forEach((c, i) => { c.id = i + 1; });
+  console.log(`  Extracted ${cars.length} cars with Final Bid prices`);
 
-  console.log(`  Prices via DOM card: ${domPriced}`);
-  console.log(`  Prices via text fallback: ${textPriced}`);
-  console.log(`  No price found: ${noPriced}`);
-  console.log(`  Total cars with prices: ${cars.length}`);
-
-  // Sanity check: warn about duplicate prices
+  // Verify: check for price accuracy
   const priceCount = {};
   cars.forEach(c => { priceCount[c.soldPrice] = (priceCount[c.soldPrice] || 0) + 1; });
-  const dupeCount = Object.values(priceCount).filter(n => n >= 3).reduce((s, n) => s + n, 0);
-  if (dupeCount > cars.length * 0.3) {
-    console.log(`%c⚠ Warning: ${dupeCount} cars share a price with 3+ others. Prices may still be off.`, 'color:orange;font-weight:bold');
-    console.log('  Try scrolling more slowly so each card fully renders.');
+  const dupeCount = Object.values(priceCount).filter(n => n >= 4).reduce((s, n) => s + n, 0);
+  if (dupeCount > cars.length * 0.2) {
+    console.log(`%c⚠ ${dupeCount} cars share a price with 4+ others — may still have issues`, 'color:orange');
   } else {
-    console.log(`  ✓ Price quality looks good (${dupeCount} duplicates out of ${cars.length})`);
+    console.log(`  ✓ Price quality looks good`);
   }
 
-  // ---- STEP 5: Download ----
+  // Show sample for verification
+  console.log('  Sample (first 5):');
+  cars.slice(0, 5).forEach(c => {
+    console.log(`    ${c.year} ${c.make} ${c.model} | $${c.soldPrice.toLocaleString()} | ${c.damage || 'no damage'} | ${c.vin}`);
+  });
+
   if (cars.length === 0) {
-    console.log('%c❌ Found cars but could not extract prices.', 'color:red');
-    console.log('  Try scrolling so car listings are visible, then re-run.');
+    console.log('%c❌ No cars with "Final bid" prices found.', 'color:red;font-size:14px');
+    console.log('  Make sure you are on bid.cars ARCHIVED results (not current auctions).');
     return;
   }
 
-  downloadJson(cars, cars.length + 'cars');
+  // ---- STEP 4: Download ----
+  const json = JSON.stringify(cars, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'cardle-bidcars-' + new Date().toISOString().split('T')[0] + '-' + cars.length + 'cars.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 
-  function downloadJson(data, suffix) {
-    const json = JSON.stringify(data, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'cardle-bidcars-' + new Date().toISOString().split('T')[0] + '-' + suffix + '.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    console.log(`%c✅ Downloaded ${data.length} cars!`, 'font-size:16px;font-weight:bold;color:#22c55e');
-    console.log(`  With images: ${data.filter(c => c.images?.length > 0).length} cars`);
-    console.log('%cNext steps:', 'color:#fbbf24;font-weight:bold');
-    console.log('  1. Run in your project terminal:');
-    console.log('     node scripts/import-scraped.js "<path-to-downloaded-file>.json"');
-    console.log('  2. npm run merge-data');
-    console.log('  3. npm run dev  (restart game)');
-    console.log('  4. (optional) node scripts/download-images.js');
-  }
+  console.log(`%c✅ Downloaded ${cars.length} cars!`, 'font-size:16px;font-weight:bold;color:#22c55e');
+  console.log(`  With images: ${cars.filter(c => c.images?.length > 0).length} cars`);
+  console.log('%cNext steps:', 'color:#fbbf24;font-weight:bold');
+  console.log('  1. node scripts/import-scraped.js "<path>.json"');
+  console.log('  2. npm run merge-data');
+  console.log('  3. npm run dev');
 
 })();
