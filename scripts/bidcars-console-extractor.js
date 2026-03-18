@@ -84,7 +84,15 @@
     if (vinLineIdx < 0) continue;
 
     // Lines AFTER the VIN — "Final bid" always appears below the VIN on bid.cars
-    const afterVin = lines.slice(vinLineIdx, Math.min(lines.length, vinLineIdx + 20)).join('\n');
+    // Stop at the next VIN to avoid leaking into the next card
+    const afterLines = [];
+    for (let j = vinLineIdx + 1; j < Math.min(lines.length, vinLineIdx + 40); j++) {
+      const line = lines[j];
+      // Stop if we hit another VIN (start of next card)
+      if (/\b[A-HJ-NPR-Z0-9]{17}\b/.test(line) && !line.includes(vin)) break;
+      afterLines.push(line);
+    }
+    const afterVin = afterLines.join('\n');
     // Lines BEFORE the VIN — for car title, make/model context
     const beforeVin = lines.slice(Math.max(0, vinLineIdx - 5), vinLineIdx + 1).join('\n');
     const block = beforeVin + '\n' + afterVin;
@@ -242,8 +250,15 @@
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 
-  console.log(`%c✅ Downloaded ${cars.length} cars!`, 'font-size:16px;font-weight:bold;color:#22c55e');
+  console.log(`%c✅ Extracted ${cars.length} cars!`, 'font-size:16px;font-weight:bold;color:#22c55e');
   console.log(`  With images: ${cars.filter(c => c.images?.length > 0).length} cars`);
+
+  // Also store globally so user can re-download if browser blocks it
+  window.__cardleData = cars;
+  window.__cardleJson = json;
+  try { navigator.clipboard.writeText(json); console.log('  📋 JSON also copied to clipboard'); } catch {}
+  console.log('  💡 If download was blocked, run: copy(window.__cardleJson)');
+  console.log('     Then paste into a new file in server/data/');
   console.log('%cNext steps:', 'color:#fbbf24;font-weight:bold');
   console.log('  1. node scripts/import-scraped.js "<path>.json"');
   console.log('  2. npm run merge-data');
